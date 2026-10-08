@@ -2,10 +2,11 @@ package quotefinder
 
 import (
 	"encoding/json"
-	"github.com/pkg/errors"
 	"io"
 	"os"
 	"strings"
+
+	"github.com/pkg/errors"
 )
 
 type quote struct {
@@ -29,17 +30,15 @@ type cliOptions struct {
 	Path     string
 	Query    string
 	HasQuery bool
-	Engine   string
 }
 
-const usage = "usage: quote-finder quotes.json [--query \"your situation\"] [--engine=decisions|completions]"
+const usage = "usage: quote-finder quotes.json [--query \"your situation\"]"
 
 func parseArgs(args []string) (cliOptions, error) {
 	if len(args) == 0 || strings.TrimSpace(args[0]) == "" || strings.HasPrefix(args[0], "--") {
 		return cliOptions{}, errors.New(usage)
 	}
-	opts := cliOptions{Path: args[0], Engine: "decisions"}
-	engineSet := false
+	opts := cliOptions{Path: args[0]}
 	for i := 1; i < len(args); i++ {
 		switch {
 		case args[i] == "--query" && !opts.HasQuery && i+1 < len(args) && !strings.HasPrefix(args[i+1], "--"):
@@ -49,12 +48,6 @@ func parseArgs(args []string) (cliOptions, error) {
 				return cliOptions{}, errors.New(usage)
 			}
 			opts.HasQuery = true
-		case strings.HasPrefix(args[i], "--engine=") && !engineSet:
-			opts.Engine = strings.TrimPrefix(args[i], "--engine=")
-			if opts.Engine != "decisions" && opts.Engine != "completions" {
-				return cliOptions{}, errors.New(usage)
-			}
-			engineSet = true
 		default:
 			return cliOptions{}, errors.New(usage)
 		}

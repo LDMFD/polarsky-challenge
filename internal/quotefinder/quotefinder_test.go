@@ -1,9 +1,7 @@
 package quotefinder
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,13 +10,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/shared"
+
+	"quote-finder/internal/openaitools"
 )
 
-func testClient(server *httptest.Server) openai.Client {
-	return openai.NewClient(
-		option.WithAPIKey("test-key"),
+func testClient(server *httptest.Server) openaitools.Client {
+	return openaitools.New("test-key", shared.ChatModelGPT6Luna,
 		option.WithBaseURL(server.URL+"/v1"),
 		option.WithHTTPClient(server.Client()),
 		option.WithMaxRetries(0),
@@ -34,15 +33,15 @@ func sampleInput() inputFile {
 }
 
 func TestParseArgs(t *testing.T) {
-	opts, err := parseArgs([]string{"quotes.json", "--engine=completions", "--query", "  feeling rejected  "})
-	if err != nil || opts.Path != "quotes.json" || opts.Query != "feeling rejected" || !opts.HasQuery || opts.Engine != "completions" {
+	opts, err := parseArgs([]string{"quotes.json", "--query", "  feeling rejected  "})
+	if err != nil || opts.Path != "quotes.json" || opts.Query != "feeling rejected" || !opts.HasQuery {
 		t.Fatalf("unexpected custom query parse: %+v %v", opts, err)
 	}
 	opts, err = parseArgs([]string{"quotes.json"})
-	if err != nil || opts.Engine != "decisions" || opts.HasQuery {
+	if err != nil || opts.HasQuery {
 		t.Fatalf("unexpected default options: %+v %v", opts, err)
 	}
-	for _, args := range [][]string{{}, {"quotes.json", "--query"}, {"quotes.json", "--query", " "}, {"quotes.json", "--query", "--engine=completions"}, {"quotes.json", "--other", "x"}, {"quotes.json", "--engine=other"}, {"quotes.json", "--engine=decisions", "--engine=completions"}} {
+	for _, args := range [][]string{{}, {"quotes.json", "--query"}, {"quotes.json", "--query", " "}, {"quotes.json", "--query", "--engine=completions"}, {"quotes.json", "--other", "x"}, {"quotes.json", "--engine=other"}} {
 		if _, err := parseArgs(args); err == nil {
 			t.Fatalf("expected argument error for %q", args)
 		}
@@ -76,83 +75,6 @@ func TestLoadInputValidation(t *testing.T) {
 	input, err := loadInput(path, "custom", true)
 	if err != nil || input.Query != "custom" {
 		t.Fatalf("override did not replace empty file query: %+v, %v", input, err)
-	}
-}
-
-func TestRankQuotesAndRequest(t *testing.T) {
-	input := sampleInput()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer test-key" {
-			t.Errorf("unexpected method or authorization")
-		}
-		var request struct {
-			Model     string `json:"model"`
-			Input     string `json:"input"`
-			Questions []struct {
-				Type         string `json:"type"`
-				Name         string `json:"name"`
-				Instructions string `json:"instructions"`
-				Choices      []struct {
-					Value       string `json:"value"`
-					Description string `json:"description"`
-				} `json:"choices"`
-			} `json:"questions"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Error(err)
-		}
-		if request.Model != "gpt-6-luna" || request.Input != input.Query || len(request.Questions) != 1 {
-			t.Errorf("unexpected decision request: %+v", request)
-			return
-		}
-		question := request.Questions[0]
-		if question.Name != "best_quote" || question.Type != "choice" || len(question.Choices) != 3 || !strings.HasSuffix(strings.TrimSpace(question.Instructions), "User input: "+fmt.Sprintf("%q", input.Query)) {
-			t.Errorf("unexpected choice question: %+v", question)
-		}
-		for i, choice := range question.Choices {
-			if choice.Value != fmt.Sprintf("quote_%d", i) || !strings.Contains(choice.Description, input.Quotes[i].Text) || strings.Contains(question.Instructions, input.Quotes[i].Text) {
-				t.Errorf("quote %d is not a separate option: %+v", i, question)
-			}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"answers":[{"type":"choice","name":"best_quote","choice":"quote_0","confidence":0.8,"probabilities":[{"value":"quote_2","probability":0.4},{"value":"quote_0","probability":0.4},{"value":"quote_1","probability":0.2}]}]}`))
-	}))
-	defer server.Close()
-
-	ranked, err := rankQuotes(context.Background(), testClient(server), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if ranked[0].Index != 0 || ranked[1].Index != 2 || ranked[2].Index != 1 {
-		t.Fatalf("wrong rank or tie order: %+v", ranked)
-	}
-}
-
-func TestRankQuotesErrors(t *testing.T) {
-	input := sampleInput()
-	input.Quotes = input.Quotes[:1]
-	for _, tc := range []struct {
-		name, response, wantError string
-		status                    int
-	}{
-		{"HTTP failure", `{}`, "429", 429},
-		{"refusal", `{"answers":[{"type":"refusal","name":"best_quote"}]}`, "refused to rank", 200},
-		{"missing answer", `{"answers":[]}`, "unexpected answer", 200},
-		{"missing probability", `{"answers":[{"type":"choice","name":"best_quote","probabilities":[{"value":"quote_0"},{"value":"none_of_these","probability":0.5}]}]}`, "invalid choice probability", 200},
-		{"bad choice", `{"answers":[{"type":"choice","name":"best_quote","probabilities":[{"value":"quote_9","probability":0.5},{"value":"none_of_these","probability":0.5}]}]}`, "unknown quote choice", 200},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(tc.status)
-				_, _ = w.Write([]byte(tc.response))
-			}))
-			defer server.Close()
-			_, err := rankQuotes(context.Background(), testClient(server), input)
-			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
-				t.Fatalf("got error %v; want %q", err, tc.wantError)
-			}
-		})
 	}
 }
 
@@ -202,28 +124,7 @@ func TestThirdPartyErrorsCarryStacks(t *testing.T) {
 	input := sampleInput()
 	input.Quotes = input.Quotes[:1]
 	_, apiErr := rankQuotes(context.Background(), testClient(server), input)
-	if apiErr == nil || !strings.Contains(fmt.Sprintf("%+v", apiErr), "ranking.go") {
+	if apiErr == nil || !strings.Contains(fmt.Sprintf("%+v", apiErr), "client.go") {
 		t.Fatalf("SDK error has no call-site stack: %+v", apiErr)
-	}
-}
-
-func TestRunOutput(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "quotes.json")
-	if err := os.WriteFile(path, []byte(`{"query":"file query","quotes":[{"text":"Go on.","movie":"Movie","character":"Hero"}]}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"answers":[{"type":"choice","name":"best_quote","choice":"quote_0","probabilities":[{"value":"quote_0","probability":0.92},{"value":"none_of_these","probability":0.08}]}]}`))
-	}))
-	defer server.Close()
-	var out bytes.Buffer
-	newClient := func(string) openai.Client { return testClient(server) }
-	if err := Run([]string{path, "--query", "new query"}, filepath.Join(dir, "missing"), func(string) string { return "test-key" }, newClient, &out); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(out.String(), `Top 1 quotes for: "new query"`) || !strings.Contains(out.String(), `[0.92] "Go on." - Hero (Movie)`) {
-		t.Fatalf("unexpected output: %s", out.String())
 	}
 }

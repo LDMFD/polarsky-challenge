@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/openai/openai-go/v3"
+	"quote-finder/internal/openaitools"
 )
 
 func writeToolCall(t *testing.T, w http.ResponseWriter, arguments string) {
@@ -75,7 +75,7 @@ func TestCompletionsRanksFromEnumToolCall(t *testing.T) {
 	}))
 	defer server.Close()
 
-	ranked, err := rankQuotesWithCompletions(context.Background(), testClient(server), input)
+	ranked, err := rankQuotes(context.Background(), testClient(server), input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,13 +89,27 @@ func TestCompletionsRejectsDuplicateQuote(t *testing.T) {
 		writeToolCall(t, w, `{"rank_1":{"quote_id":"quote_0","relevance_score":0.9},"rank_2":{"quote_id":"quote_0","relevance_score":0.8},"rank_3":{"quote_id":"quote_1","relevance_score":0.7}}`)
 	}))
 	defer server.Close()
-	_, err := rankQuotesWithCompletions(context.Background(), testClient(server), sampleInput())
+	_, err := rankQuotes(context.Background(), testClient(server), sampleInput())
 	if err == nil || !strings.Contains(err.Error(), "duplicate quote ID") {
 		t.Fatalf("expected duplicate quote error, got %v", err)
 	}
 }
 
-func TestRunCompletionsEngine(t *testing.T) {
+func TestCompletionsBreaksScoreTiesByInputOrder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeToolCall(t, w, `{"rank_1":{"quote_id":"quote_2","relevance_score":0.8},"rank_2":{"quote_id":"quote_0","relevance_score":0.8},"rank_3":{"quote_id":"quote_1","relevance_score":0.7}}`)
+	}))
+	defer server.Close()
+	ranked, err := rankQuotes(context.Background(), testClient(server), sampleInput())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ranked[0].Index != 0 || ranked[1].Index != 2 {
+		t.Fatalf("tie did not follow input order: %+v", ranked)
+	}
+}
+
+func TestRun(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "quotes.json")
 	if err := os.WriteFile(path, []byte(`{"query":"file query","quotes":[{"text":"Go on.","movie":"Movie","character":"Hero"}]}`), 0600); err != nil {
@@ -106,7 +120,7 @@ func TestRunCompletionsEngine(t *testing.T) {
 	}))
 	defer server.Close()
 	var out bytes.Buffer
-	if err := Run([]string{path, "--engine=completions", "--query", "new query"}, filepath.Join(dir, "missing"), func(string) string { return "test-key" }, func(string) openai.Client { return testClient(server) }, &out); err != nil {
+	if err := Run([]string{path, "--query", "new query"}, filepath.Join(dir, "missing"), func(string) string { return "test-key" }, func(string) openaitools.Client { return testClient(server) }, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), `Top 1 quotes for: "new query"`) || !strings.Contains(out.String(), `[0.92] "Go on." - Hero (Movie)`) {

@@ -9,10 +9,10 @@ Requires Go 1.25+, network access, and an OpenAI API key. Put `OPENAI_API_KEY=..
 ```sh
 go run main.go quotes.json
 go run main.go quotes.json --query "I just got rejected and feel like giving up"
-go run main.go quotes.json --engine=completions --query "I'm into space travel right now"
+go run main.go quotes.json --query "I'm into space travel right now"
 ```
 
-`--engine=decisions` is the default. It compares all quotes as separate Decisions choice options; its scores are relative probabilities across the supplied quotes. `--engine=completions` uses Chat Completions with a forced function call whose quote IDs are restricted to an enum of the supplied quotes; its scores are model relevance estimates. The JSON file needs a `query` string and a `quotes` array; each quote needs `text`, `movie`, and `character` strings. `--query` overrides the file's query. Neither score is a calibrated mental wellness measure.
+The CLI uses Chat Completions with a forced function call whose quote IDs are restricted to the supplied quotes. Its scores are model relevance estimates, not calibrated mental wellness measures. The JSON file needs a `query` string and a `quotes` array; each quote needs `text`, `movie`, and `character` strings. `--query` overrides the file's query.
 
 Run tests with `go test ./...`.
 

@@ -3,13 +3,15 @@ package quotefinder
 import (
 	"context"
 	"fmt"
-	"github.com/openai/openai-go/v3"
-	"github.com/pkg/errors"
 	"io"
 	"time"
+
+	"github.com/pkg/errors"
+
+	"quote-finder/internal/openaitools"
 )
 
-func Run(args []string, keyPath string, getenv func(string) string, newClient func(string) openai.Client, out io.Writer) error {
+func Run(args []string, keyPath string, getenv func(string) string, newClient func(string) openaitools.Client, out io.Writer) error {
 	opts, err := parseArgs(args)
 	if err != nil {
 		return err
@@ -22,19 +24,10 @@ func Run(args []string, keyPath string, getenv func(string) string, newClient fu
 	if err != nil {
 		return err
 	}
-	timeout := 20 * time.Second
-	if opts.Engine == "completions" {
-		timeout = 60 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	client := newClient(apiKey)
-	var ranked []rankedQuote
-	if opts.Engine == "completions" {
-		ranked, err = rankQuotesWithCompletions(ctx, client, input)
-	} else {
-		ranked, err = rankQuotes(ctx, client, input)
-	}
+	ranked, err := rankQuotes(ctx, client, input)
 	if err != nil {
 		return err
 	}

@@ -123,7 +123,7 @@ func TestRankQuotesErrors(t *testing.T) {
 		status                    int
 	}{
 		{"HTTP failure", `{}`, "429", 429},
-		{"refusal", `{"answers":[{"type":"refusal","name":"quote_0"}]}`, "refused", 200},
+		{"all refused", `{"answers":[{"type":"refusal","name":"quote_0"}]}`, "refused to score every quote", 200},
 		{"missing answer", `{"answers":[]}`, "0 answers for 1 quotes", 200},
 		{"missing score", `{"answers":[{"type":"predicate","name":"quote_0"}]}`, "invalid score", 200},
 		{"bad name", `{"answers":[{"type":"predicate","name":"quote_9","probability":0.5}]}`, "unexpected or duplicate", 200},
@@ -140,6 +140,23 @@ func TestRankQuotesErrors(t *testing.T) {
 				t.Fatalf("got error %v; want %q", err, tc.wantError)
 			}
 		})
+	}
+}
+
+func TestRankQuotesSkipsOneRefusal(t *testing.T) {
+	input := sampleInput()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"answers":[{"type":"predicate","name":"quote_0","probability":0.7},{"type":"refusal","name":"quote_1"},{"type":"predicate","name":"quote_2","probability":0.9}]}`))
+	}))
+	defer server.Close()
+
+	ranked, err := rankQuotes(context.Background(), testClient(server), input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ranked) != 2 || ranked[0].Index != 2 || ranked[1].Index != 0 {
+		t.Fatalf("expected scored quotes in rank order, got %+v", ranked)
 	}
 }
 

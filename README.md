@@ -11,7 +11,7 @@ go run main.go quotes.json
 go run main.go quotes.json --query "I just got rejected and feel like giving up"
 ```
 
-The JSON file needs a `query` string and a `quotes` array. Each quote needs `text`, `movie`, and `character` strings. `--query` overrides the file's query. Scores are model estimates of relevance, not calibrated mental wellness measures.
+The JSON file needs a `query` string and a `quotes` array. Each quote needs `text`, `movie`, and `character` strings. `--query` overrides the file's query. Quotes the API declines to score are skipped; the CLI reports an error if none can be ranked. Scores are model estimates of relevance, not calibrated mental wellness measures.
 
 Run tests with `go test ./...`.
 

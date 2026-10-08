@@ -10,11 +10,11 @@ import (
 )
 
 func Run(args []string, keyPath string, getenv func(string) string, newClient func(string) openai.Client, out io.Writer) error {
-	path, override, hasOverride, err := parseArgs(args)
+	opts, err := parseArgs(args)
 	if err != nil {
 		return err
 	}
-	input, err := loadInput(path, override, hasOverride)
+	input, err := loadInput(opts.Path, opts.Query, opts.HasQuery)
 	if err != nil {
 		return err
 	}
@@ -22,9 +22,19 @@ func Run(args []string, keyPath string, getenv func(string) string, newClient fu
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	timeout := 20 * time.Second
+	if opts.Engine == "completions" {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	ranked, err := rankQuotes(ctx, newClient(apiKey), input)
+	client := newClient(apiKey)
+	var ranked []rankedQuote
+	if opts.Engine == "completions" {
+		ranked, err = rankQuotesWithCompletions(ctx, client, input)
+	} else {
+		ranked, err = rankQuotes(ctx, client, input)
+	}
 	if err != nil {
 		return err
 	}

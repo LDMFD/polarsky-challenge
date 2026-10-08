@@ -34,12 +34,16 @@ func sampleInput() inputFile {
 }
 
 func TestParseArgs(t *testing.T) {
-	path, query, overridden, err := parseArgs([]string{"quotes.json", "--query", "  feeling rejected  "})
-	if err != nil || path != "quotes.json" || query != "feeling rejected" || !overridden {
-		t.Fatalf("unexpected custom query parse: %q %q %v %v", path, query, overridden, err)
+	opts, err := parseArgs([]string{"quotes.json", "--engine=completions", "--query", "  feeling rejected  "})
+	if err != nil || opts.Path != "quotes.json" || opts.Query != "feeling rejected" || !opts.HasQuery || opts.Engine != "completions" {
+		t.Fatalf("unexpected custom query parse: %+v %v", opts, err)
 	}
-	for _, args := range [][]string{{}, {"quotes.json", "--query"}, {"quotes.json", "--query", " "}, {"quotes.json", "--other", "x"}} {
-		if _, _, _, err := parseArgs(args); err == nil {
+	opts, err = parseArgs([]string{"quotes.json"})
+	if err != nil || opts.Engine != "decisions" || opts.HasQuery {
+		t.Fatalf("unexpected default options: %+v %v", opts, err)
+	}
+	for _, args := range [][]string{{}, {"quotes.json", "--query"}, {"quotes.json", "--query", " "}, {"quotes.json", "--query", "--engine=completions"}, {"quotes.json", "--other", "x"}, {"quotes.json", "--engine=other"}, {"quotes.json", "--engine=decisions", "--engine=completions"}} {
+		if _, err := parseArgs(args); err == nil {
 			t.Fatalf("expected argument error for %q", args)
 		}
 	}
@@ -88,21 +92,30 @@ func TestRankQuotesAndRequest(t *testing.T) {
 				Type         string `json:"type"`
 				Name         string `json:"name"`
 				Instructions string `json:"instructions"`
+				Choices      []struct {
+					Value       string `json:"value"`
+					Description string `json:"description"`
+				} `json:"choices"`
 			} `json:"questions"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Error(err)
 		}
-		if request.Model != "gpt-6-luna" || request.Input != input.Query || len(request.Questions) != 3 {
+		if request.Model != "gpt-6-luna" || request.Input != input.Query || len(request.Questions) != 1 {
 			t.Errorf("unexpected decision request: %+v", request)
+			return
 		}
-		for i, q := range request.Questions {
-			if q.Name != "quote_"+string(rune('0'+i)) || q.Type != "predicate" || !strings.Contains(q.Instructions, input.Quotes[i].Text) {
-				t.Errorf("unexpected question %d: %+v", i, q)
+		question := request.Questions[0]
+		if question.Name != "best_quote" || question.Type != "choice" || len(question.Choices) != 3 || !strings.HasSuffix(strings.TrimSpace(question.Instructions), "User input: "+fmt.Sprintf("%q", input.Query)) {
+			t.Errorf("unexpected choice question: %+v", question)
+		}
+		for i, choice := range question.Choices {
+			if choice.Value != fmt.Sprintf("quote_%d", i) || !strings.Contains(choice.Description, input.Quotes[i].Text) || strings.Contains(question.Instructions, input.Quotes[i].Text) {
+				t.Errorf("quote %d is not a separate option: %+v", i, question)
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"answers":[{"type":"predicate","name":"quote_2","probability":0.8},{"type":"predicate","name":"quote_0","probability":0.8},{"type":"predicate","name":"quote_1","probability":0.3}]}`))
+		_, _ = w.Write([]byte(`{"answers":[{"type":"choice","name":"best_quote","choice":"quote_0","confidence":0.8,"probabilities":[{"value":"quote_2","probability":0.4},{"value":"quote_0","probability":0.4},{"value":"quote_1","probability":0.2}]}]}`))
 	}))
 	defer server.Close()
 
@@ -123,10 +136,10 @@ func TestRankQuotesErrors(t *testing.T) {
 		status                    int
 	}{
 		{"HTTP failure", `{}`, "429", 429},
-		{"all refused", `{"answers":[{"type":"refusal","name":"quote_0"}]}`, "refused to score every quote", 200},
-		{"missing answer", `{"answers":[]}`, "0 answers for 1 quotes", 200},
-		{"missing score", `{"answers":[{"type":"predicate","name":"quote_0"}]}`, "invalid score", 200},
-		{"bad name", `{"answers":[{"type":"predicate","name":"quote_9","probability":0.5}]}`, "unexpected or duplicate", 200},
+		{"refusal", `{"answers":[{"type":"refusal","name":"best_quote"}]}`, "refused to rank", 200},
+		{"missing answer", `{"answers":[]}`, "unexpected answer", 200},
+		{"missing probability", `{"answers":[{"type":"choice","name":"best_quote","probabilities":[{"value":"quote_0"},{"value":"none_of_these","probability":0.5}]}]}`, "invalid choice probability", 200},
+		{"bad choice", `{"answers":[{"type":"choice","name":"best_quote","probabilities":[{"value":"quote_9","probability":0.5},{"value":"none_of_these","probability":0.5}]}]}`, "unknown quote choice", 200},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -140,23 +153,6 @@ func TestRankQuotesErrors(t *testing.T) {
 				t.Fatalf("got error %v; want %q", err, tc.wantError)
 			}
 		})
-	}
-}
-
-func TestRankQuotesSkipsOneRefusal(t *testing.T) {
-	input := sampleInput()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"answers":[{"type":"predicate","name":"quote_0","probability":0.7},{"type":"refusal","name":"quote_1"},{"type":"predicate","name":"quote_2","probability":0.9}]}`))
-	}))
-	defer server.Close()
-
-	ranked, err := rankQuotes(context.Background(), testClient(server), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ranked) != 2 || ranked[0].Index != 2 || ranked[1].Index != 0 {
-		t.Fatalf("expected scored quotes in rank order, got %+v", ranked)
 	}
 }
 
@@ -219,7 +215,7 @@ func TestRunOutput(t *testing.T) {
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"answers":[{"type":"predicate","name":"quote_0","probability":0.92}]}`))
+		_, _ = w.Write([]byte(`{"answers":[{"type":"choice","name":"best_quote","choice":"quote_0","probabilities":[{"value":"quote_0","probability":0.92},{"value":"none_of_these","probability":0.08}]}]}`))
 	}))
 	defer server.Close()
 	var out bytes.Buffer

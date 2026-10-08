@@ -25,20 +25,41 @@ type rankedQuote struct {
 	Index int
 }
 
-func parseArgs(args []string) (path, override string, hasOverride bool, err error) {
-	if len(args) != 1 && len(args) != 3 {
-		return "", "", false, errors.New("usage: quote-finder quotes.json [--query \"your situation\"]")
+type cliOptions struct {
+	Path     string
+	Query    string
+	HasQuery bool
+	Engine   string
+}
+
+const usage = "usage: quote-finder quotes.json [--query \"your situation\"] [--engine=decisions|completions]"
+
+func parseArgs(args []string) (cliOptions, error) {
+	if len(args) == 0 || strings.TrimSpace(args[0]) == "" || strings.HasPrefix(args[0], "--") {
+		return cliOptions{}, errors.New(usage)
 	}
-	if strings.TrimSpace(args[0]) == "" {
-		return "", "", false, errors.New("input file path is empty")
-	}
-	if len(args) == 3 {
-		if args[1] != "--query" || strings.TrimSpace(args[2]) == "" {
-			return "", "", false, errors.New("usage: quote-finder quotes.json [--query \"your situation\"]")
+	opts := cliOptions{Path: args[0], Engine: "decisions"}
+	engineSet := false
+	for i := 1; i < len(args); i++ {
+		switch {
+		case args[i] == "--query" && !opts.HasQuery && i+1 < len(args) && !strings.HasPrefix(args[i+1], "--"):
+			i++
+			opts.Query = strings.TrimSpace(args[i])
+			if opts.Query == "" {
+				return cliOptions{}, errors.New(usage)
+			}
+			opts.HasQuery = true
+		case strings.HasPrefix(args[i], "--engine=") && !engineSet:
+			opts.Engine = strings.TrimPrefix(args[i], "--engine=")
+			if opts.Engine != "decisions" && opts.Engine != "completions" {
+				return cliOptions{}, errors.New(usage)
+			}
+			engineSet = true
+		default:
+			return cliOptions{}, errors.New(usage)
 		}
-		return args[0], strings.TrimSpace(args[2]), true, nil
 	}
-	return args[0], "", false, nil
+	return opts, nil
 }
 
 func loadInput(path, override string, hasOverride bool) (inputFile, error) {

@@ -32,7 +32,8 @@ env.props with a time-limited OpenAI API key (no security risk if you see it).
 
 AI assistant allowed me to prototype two different approaches rapidly. It got a little mixed up in the middle about what it was supposed to
 be querying, but that just required paying attention and a little human intervention (these prompts omitted from the prompts section below).
-Otherwise it went very smoothly.
+Otherwise it generally went well, except that the mental health-orientated prompt accidentally got dropped (see the note above). The CLI
+flags shouldn't be parsed manually. I kept to the 1-hour time-block in spirit, rather than fixing these after I noticed them.
 
 ## User Engagement
 

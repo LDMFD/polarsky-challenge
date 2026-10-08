@@ -8,6 +8,11 @@ The CLI sends the user's query and all candidate quotes to OpenAI's Chat Complet
 the model to selecting quote IDs from the input and returning relevance scores; the CLI validates the response, sorts the selections 
 by score, and prints up to three quotes. The scores are model estimates of relevance, not calibrated measures of emotional benefit.
 
+The ranking instruction is [here](https://github.com/LDMFD/polarsky-challenge/blob/e58f0411ba27f51eccdf94bdbe8c67c568cc2e27/internal/quotefinder/completions.go#L21).
+N.B. it could instead be rephrased in a way that is designed to improve the user's mental health, rather than just reflect it. 
+An earlier version of the prompt that is more along those lines is found
+[here](https://github.com/LDMFD/polarsky-challenge/blob/fcacedb48ab4d8cbd6df093dfc19cdab83c86479/internal/quotefinder/ranking.go#L14).
+
 ## Key prompts used
 
 ```

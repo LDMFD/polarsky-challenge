@@ -71,4 +71,4 @@ Top 3 quotes for: "AI is going to kill us all"
 
 ## Stretch Goal
 
-This was implemented as the `--query` parameter, and was essential to testing and making sure the results are reasonable.
+This was implemented as the `--query` parameter, and was useful for rapid testing in order to make sure the results are reasonable.

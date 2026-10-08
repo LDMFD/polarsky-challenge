@@ -1,16 +1,29 @@
-package main
+package quotefinder
 
 import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 )
+
+func testClient(server *httptest.Server) openai.Client {
+	return openai.NewClient(
+		option.WithAPIKey("test-key"),
+		option.WithBaseURL(server.URL+"/v1"),
+		option.WithHTTPClient(server.Client()),
+		option.WithMaxRetries(0),
+	)
+}
 
 func sampleInput() inputFile {
 	return inputFile{Query: "I feel stuck", Quotes: []quote{
@@ -68,7 +81,15 @@ func TestRankQuotesAndRequest(t *testing.T) {
 		if r.Method != http.MethodPost || r.Header.Get("Authorization") != "Bearer test-key" {
 			t.Errorf("unexpected method or authorization")
 		}
-		var request decisionRequest
+		var request struct {
+			Model     string `json:"model"`
+			Input     string `json:"input"`
+			Questions []struct {
+				Type         string `json:"type"`
+				Name         string `json:"name"`
+				Instructions string `json:"instructions"`
+			} `json:"questions"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Error(err)
 		}
@@ -80,11 +101,12 @@ func TestRankQuotesAndRequest(t *testing.T) {
 				t.Errorf("unexpected question %d: %+v", i, q)
 			}
 		}
+		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"answers":[{"type":"predicate","name":"quote_2","probability":0.8},{"type":"predicate","name":"quote_0","probability":0.8},{"type":"predicate","name":"quote_1","probability":0.3}]}`))
 	}))
 	defer server.Close()
 
-	ranked, err := rankQuotes(context.Background(), server.Client(), server.URL, "test-key", input)
+	ranked, err := rankQuotes(context.Background(), testClient(server), input)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +122,7 @@ func TestRankQuotesErrors(t *testing.T) {
 		name, response, wantError string
 		status                    int
 	}{
-		{"HTTP failure", `{}`, "HTTP 429", 429},
+		{"HTTP failure", `{}`, "429", 429},
 		{"refusal", `{"answers":[{"type":"refusal","name":"quote_0"}]}`, "refused", 200},
 		{"missing answer", `{"answers":[]}`, "0 answers for 1 quotes", 200},
 		{"missing score", `{"answers":[{"type":"predicate","name":"quote_0"}]}`, "invalid score", 200},
@@ -108,18 +130,67 @@ func TestRankQuotesErrors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(tc.status)
 				_, _ = w.Write([]byte(tc.response))
 			}))
 			defer server.Close()
-			_, err := rankQuotes(context.Background(), server.Client(), server.URL, "test-key", input)
+			_, err := rankQuotes(context.Background(), testClient(server), input)
 			if err == nil || !strings.Contains(err.Error(), tc.wantError) {
 				t.Fatalf("got error %v; want %q", err, tc.wantError)
 			}
 		})
 	}
-	if _, err := rankQuotes(context.Background(), http.DefaultClient, "", "", input); err == nil || !strings.Contains(err.Error(), "OPENAI_API_KEY") {
-		t.Fatalf("expected missing key error; got %v", err)
+}
+
+func TestLoadAPIKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "env.props")
+	if err := os.WriteFile(path, []byte("OPENAI_API_KEY=from-file\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	emptyEnv := func(string) string { return "" }
+	key, err := loadAPIKey(path, emptyEnv)
+	if err != nil || key != "from-file" {
+		t.Fatalf("file key: %q, %v", key, err)
+	}
+	key, err = loadAPIKey(path, func(string) string { return "from-env" })
+	if err != nil || key != "from-env" {
+		t.Fatalf("environment override: %q, %v", key, err)
+	}
+	if err := os.WriteFile(path, []byte("INVALID LINE!"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadAPIKey(path, emptyEnv); err == nil || !strings.Contains(err.Error(), "load env.props") {
+		t.Fatalf("expected parser error, got %v", err)
+	}
+	if _, err := loadAPIKey(filepath.Join(dir, "missing"), emptyEnv); err == nil || !strings.Contains(err.Error(), "OPENAI_API_KEY") {
+		t.Fatalf("expected missing key error, got %v", err)
+	}
+}
+
+func TestThirdPartyErrorsCarryStacks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "env.props")
+	if err := os.WriteFile(path, []byte("INVALID LINE!"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, configErr := loadAPIKey(path, func(string) string { return "" })
+	if configErr == nil || !strings.Contains(fmt.Sprintf("%+v", configErr), "config.go") {
+		t.Fatalf("koanf error has no call-site stack: %+v", configErr)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"test failure","type":"invalid_request_error"}}`))
+	}))
+	defer server.Close()
+	input := sampleInput()
+	input.Quotes = input.Quotes[:1]
+	_, apiErr := rankQuotes(context.Background(), testClient(server), input)
+	if apiErr == nil || !strings.Contains(fmt.Sprintf("%+v", apiErr), "ranking.go") {
+		t.Fatalf("SDK error has no call-site stack: %+v", apiErr)
 	}
 }
 
@@ -130,11 +201,13 @@ func TestRunOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"answers":[{"type":"predicate","name":"quote_0","probability":0.92}]}`))
 	}))
 	defer server.Close()
 	var out bytes.Buffer
-	if err := run([]string{path, "--query", "new query"}, "test-key", server.Client(), server.URL, &out); err != nil {
+	newClient := func(string) openai.Client { return testClient(server) }
+	if err := Run([]string{path, "--query", "new query"}, filepath.Join(dir, "missing"), func(string) string { return "test-key" }, newClient, &out); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), `Top 1 quotes for: "new query"`) || !strings.Contains(out.String(), `[0.92] "Go on." - Hero (Movie)`) {
